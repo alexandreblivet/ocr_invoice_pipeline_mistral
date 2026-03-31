@@ -1,0 +1,13 @@
+[project]
+name = "ocr-invoice-pipeline-mistral"
+version = "0.1.0"
+description = "Invoice processing pipeline powered by Mistral OCR 3"
+requires-python = ">=3.12"
+dependencies = [
+    "mistralai>=2.2.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.2",
+    "streamlit>=1.55.0",
+    "streamlit-pdf-viewer>=0.0.28",
+]
