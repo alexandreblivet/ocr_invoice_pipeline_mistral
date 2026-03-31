@@ -11,3 +11,14 @@ dependencies = [
     "streamlit>=1.55.0",
     "streamlit-pdf-viewer>=0.0.28",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.2",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: end-to-end tests hitting real Mistral API (deselect with '-m \"not smoke\"')",
+]
