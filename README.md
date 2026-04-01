@@ -74,13 +74,11 @@ The retrieved context is passed to `mistral-large-latest` for response generatio
 
 ### Why this design
 
-**Two-tier extraction** avoids the common pitfall of building a fragile single-path pipeline. Annotation is fast but occasionally fails on unusual layouts; chat parse is slower but handles edge cases. The fallback is automatic and invisible to the user.
+**Two-tier extraction** avoids the common pitfall of building a fragile single-path pipeline. Annotation is fast but occasionally fails on unusual layouts; chat parse is slower but handles edge cases.
 
-**Single-file database** keeps deployment simple. There is no PostgreSQL to provision, no vector service to manage. The app runs anywhere Python runs.
+**Single-file database** keeps deployment simple. Maybe a next step would be to add a real db ?
 
 **Intent-routed retrieval** avoids the weakness of pure vector search on structured queries. Asking "how many invoices did we receive last month" is a SQL query, not a similarity search. Routing to the right retrieval path produces better answers with less noise.
-
-**Transactional consistency** between structured data and embeddings prevents the silent data corruption that can happen when a relational database and a vector store fall out of sync.
 
 ## Testing
 
