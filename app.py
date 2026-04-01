@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import glob as glob_mod
@@ -10,9 +11,13 @@ from mistralai.client import Mistral
 
 from pipeline.extract import process_invoice
 from pipeline.schemas import InvoiceData, LineItem, ProcessedInvoice
+from pipeline.database import InvoiceDatabase
+from pipeline.embeddings import embed_text, build_invoice_chunk
+from pipeline.rag import build_rag_context, stream_response, QueryIntent
 from components.pdf_viewer import render_pdf
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # ── Page config ──────────────────────────────────────────────────────────────
 
@@ -46,6 +51,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Database singleton ──────────────────────────────────────────────────────
+
+
+@st.cache_resource
+def get_database() -> InvoiceDatabase:
+    return InvoiceDatabase()
+
+
+db = get_database()
+
 # ── Session state defaults ───────────────────────────────────────────────────
 
 _DEFAULTS: dict = {
@@ -64,6 +79,17 @@ def get_api_key() -> str | None:
     return os.environ.get("MISTRAL_API_KEY") or st.session_state.get("_api_key")
 
 
+def _save_to_db(processed: ProcessedInvoice, api_key: str) -> int | None:
+    """Save a ProcessedInvoice to the database with embedding. Returns invoice id."""
+    chunk_text = build_invoice_chunk(processed, processed.raw_markdown)
+    try:
+        embedding = embed_text(chunk_text, api_key)
+    except Exception as exc:
+        logger.warning("Embedding failed for %s: %s", processed.filename, exc)
+        embedding = None
+    return db.save_invoice(processed, chunk_text=chunk_text, embedding=embedding)
+
+
 def _process_and_store(filename: str, pdf_bytes: bytes, api_key: str) -> bool:
     """Process a single file and store in session state. Returns True on success."""
     if filename in st.session_state.processed_invoices:
@@ -72,6 +98,14 @@ def _process_and_store(filename: str, pdf_bytes: bytes, api_key: str) -> bool:
         result = process_invoice(pdf_bytes, filename, api_key)
         st.session_state.processed_invoices[filename] = result.model_dump()
         st.session_state.uploaded_files_cache[filename] = pdf_bytes
+
+        # Auto-save to database
+        if st.session_state.get("auto_save", True):
+            try:
+                _save_to_db(result, api_key)
+            except Exception as exc:
+                logger.warning("Auto-save to DB failed for %s: %s", filename, exc)
+
         return True
     except Exception as e:
         st.error(f"Failed to process **{filename}**: {e}")
@@ -99,6 +133,9 @@ with st.sidebar:
     if not api_key:
         st.warning("Enter your Mistral API key to get started.")
 
+    # Auto-save toggle
+    st.toggle("Auto-save after extraction", value=True, key="auto_save")
+
     # File uploader
     uploaded_files = st.file_uploader(
         "Upload invoices",
@@ -125,10 +162,16 @@ with st.sidebar:
             st.rerun()
 
     # Status
-    n = len(st.session_state.processed_invoices)
-    if n:
-        st.divider()
-        st.metric("Processed invoices", n)
+    st.divider()
+    n_session = len(st.session_state.processed_invoices)
+    db_stats = db.get_stats()
+    n_db = db_stats["count"]
+
+    if n_session:
+        st.metric("Session invoices", n_session)
+    if n_db:
+        st.metric("Database invoices", n_db)
+    if n_session:
         for fname in st.session_state.processed_invoices:
             st.caption(f"- {fname}")
 
@@ -155,7 +198,9 @@ if uploaded_files and api_key:
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["\U0001f4cb Validation", "\U0001f4ac Chat over Invoices"])
+tab1, tab2, tab3 = st.tabs(
+    ["\U0001f4cb Validation", "\U0001f4c2 Invoice Database", "\U0001f4ac Chat over Invoices"]
+)
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 1 — VALIDATION
@@ -226,9 +271,9 @@ with tab1:
 
         # Status banner
         if method == "annotation":
-            st.success(f"Extracted via document annotation (high confidence)")
+            st.success("Extracted via document annotation (high confidence)")
         else:
-            st.warning(f"Extracted via chat fallback — please verify the results")
+            st.warning("Extracted via chat fallback — please verify the results")
 
         # ── Two-column layout ────────────────────────────────────────────
         left, right = st.columns([1, 1])
@@ -319,9 +364,9 @@ with tab1:
                     payment_terms=payment_terms or None,
                 )
 
-            # Export buttons
+            # Export & save buttons
             st.divider()
-            ec1, ec2 = st.columns(2)
+            ec1, ec2, ec3 = st.columns(3)
             updated = _build_updated_invoice()
             with ec1:
                 st.download_button(
@@ -344,49 +389,179 @@ with tab1:
                     "text/csv",
                     type="primary",
                 )
+            with ec3:
+                if st.button("Save to Database", type="primary", key=f"save_db_{selected}"):
+                    if not api_key:
+                        st.error("Set an API key first.")
+                    else:
+                        proc = ProcessedInvoice(
+                            filename=selected,
+                            data=updated,
+                            raw_markdown=inv_dict.get("raw_markdown", ""),
+                            extraction_method=method,
+                        )
+                        try:
+                            _save_to_db(proc, api_key)
+                            st.success("Saved to database and indexed for search")
+                        except Exception as exc:
+                            st.error(f"Failed to save: {exc}")
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — CHAT OVER INVOICES
+# TAB 2 — INVOICE DATABASE
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab2:
-    invoices = st.session_state.processed_invoices
-    n_inv = len(invoices)
+    if db.is_empty:
+        st.info("No invoices in the database yet.")
 
-    if not n_inv:
+        # Offer to load sample data
+        if sample_files and api_key:
+            st.markdown("---")
+            if st.button("Load sample invoices into database", type="primary"):
+                progress = st.progress(0, text="Processing samples...")
+                for i, path in enumerate(sample_files):
+                    name = os.path.basename(path)
+                    with open(path, "rb") as f:
+                        pdf_bytes = f.read()
+                    # Process through OCR pipeline
+                    try:
+                        result = process_invoice(pdf_bytes, name, api_key)
+                        st.session_state.processed_invoices[name] = result.model_dump()
+                        st.session_state.uploaded_files_cache[name] = pdf_bytes
+                        _save_to_db(result, api_key)
+                    except Exception as exc:
+                        st.warning(f"Failed to process {name}: {exc}")
+                    progress.progress((i + 1) / len(sample_files), text=f"Processed {name}")
+                progress.empty()
+                st.rerun()
+    else:
+        # ── Summary metrics ──────────────────────────────────────────────
+        stats = db.get_stats()
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Total Invoices", stats["count"])
+        mc2.metric("Total Spend", f"${stats['total_spend']:,.2f}")
+        mc3.metric("Unique Vendors", stats["vendor_count"])
+        mc4.metric("Avg Invoice", f"${stats['avg_amount']:,.2f}")
+
+        st.divider()
+
+        # ── Invoice table ────────────────────────────────────────────────
+        all_db_invoices = db.get_all_invoices()
+        display_data = [
+            {
+                "Vendor": inv["vendor_name"],
+                "Invoice #": inv["invoice_number"],
+                "Date": inv["invoice_date"],
+                "Total": inv["total_amount"],
+                "Currency": inv["currency"],
+                "Items": inv["line_items_count"],
+                "File": inv["filename"],
+            }
+            for inv in all_db_invoices
+        ]
+        st.dataframe(
+            pd.DataFrame(display_data),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ── Detail view ──────────────────────────────────────────────────
+        db_filenames = [inv["filename"] for inv in all_db_invoices]
+        selected_db = st.selectbox("View invoice details", db_filenames, key="db_detail_select")
+        if selected_db:
+            inv_record = db.get_invoice_by_filename(selected_db)
+            if inv_record:
+                with st.expander(f"Line items for {selected_db}", expanded=True):
+                    items = db.get_line_items(inv_record["id"])
+                    if items:
+                        st.dataframe(
+                            pd.DataFrame(items)[["description", "quantity", "unit_price", "total"]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.caption("No line items")
+
+        # ── Actions ──────────────────────────────────────────────────────
+        st.divider()
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            # Export all to CSV
+            if all_db_invoices:
+                csv_rows = []
+                for inv in all_db_invoices:
+                    items = db.get_line_items(inv["id"])
+                    for item in items:
+                        csv_rows.append({
+                            "file": inv["filename"],
+                            "vendor": inv["vendor_name"],
+                            "invoice_number": inv["invoice_number"],
+                            "invoice_date": inv["invoice_date"],
+                            "currency": inv["currency"],
+                            "description": item["description"],
+                            "quantity": item["quantity"],
+                            "unit_price": item["unit_price"],
+                            "total": item["total"],
+                        })
+                if csv_rows:
+                    st.download_button(
+                        "Export all to CSV",
+                        pd.DataFrame(csv_rows).to_csv(index=False),
+                        "all_database_invoices.csv",
+                        "text/csv",
+                        type="primary",
+                    )
+        with ac2:
+            confirm_clear = st.checkbox("I want to clear the entire database", key="confirm_clear")
+            if confirm_clear:
+                if st.button("Clear database", type="primary"):
+                    db.clear_all()
+                    st.rerun()
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 3 — CHAT OVER INVOICES
+# ════════════════════════════════════════════════════════════════════════════
+
+with tab3:
+    session_invoices = st.session_state.processed_invoices
+    n_session = len(session_invoices)
+    n_db = db.get_stats()["count"]
+    has_data = n_db > 0 or n_session > 0
+
+    if not has_data:
         st.info(
             "No invoices loaded yet. Upload invoices in the sidebar or use "
             "**Try with sample data**, then come back here to chat."
         )
     else:
-        st.markdown(f"**Chatting over {n_inv} invoice{'s' if n_inv != 1 else ''}**")
-
-        # Build context
-        context_parts = []
-        for fname, inv in invoices.items():
-            context_parts.append(f"## {fname}\n```json\n{json.dumps(inv['data'], indent=2)}\n```")
-        invoices_context = "\n\n".join(context_parts)
-
-        system_prompt = (
-            "You are an invoice analysis assistant. Here are the processed invoices:\n\n"
-            f"{invoices_context}\n\n"
-            "Answer the user's question based on this data. Be precise with numbers. "
-            "If you calculate totals, show your work. Use markdown formatting."
-        )
+        # Mode indicator
+        if n_db > 0:
+            st.markdown(f"**RAG mode** — querying {n_db} invoice{'s' if n_db != 1 else ''} in database")
+        else:
+            st.markdown(f"**Context mode** — using {n_session} invoice{'s' if n_session != 1 else ''} from session")
 
         # Display chat history
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
+                # Show metadata for assistant messages
+                meta = msg.get("metadata")
+                if meta and msg["role"] == "assistant":
+                    intent = meta.get("intent", "")
+                    with st.expander(f"Retrieval details ({intent})"):
+                        if "sql" in meta:
+                            st.code(meta["sql"], language="sql")
+                        if "num_results" in meta:
+                            st.caption(f"Retrieved {meta['num_results']} invoices via semantic search")
 
         # Example query chips (only when history is empty)
         if not st.session_state.chat_history:
             st.markdown("**Try asking:**")
             examples = [
-                "Total spend across all invoices?",
-                "Which invoices are overdue?",
-                "Break down spending by vendor",
-                "Find the most expensive line item",
+                "Total spend by vendor",
+                "Find invoices mentioning rush delivery",
+                "Which invoice has the most line items?",
+                "Compare totals across all invoices",
             ]
             cols = st.columns(len(examples))
             for col, example in zip(cols, examples):
@@ -405,35 +580,81 @@ with tab2:
             and st.session_state.chat_history[-1]["role"] == "user"
             and api_key
         ):
+            user_query = st.session_state.chat_history[-1]["content"]
+
             with st.chat_message("user"):
-                st.markdown(st.session_state.chat_history[-1]["content"])
+                st.markdown(user_query)
 
             with st.chat_message("assistant"):
                 placeholder = st.empty()
                 full_response = ""
+                rag_metadata = {}
 
-                messages = [{"role": "system", "content": system_prompt}]
-                messages.extend(
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.chat_history
-                )
+                # Try RAG first if database has data
+                rag_context = ""
+                if n_db > 0:
+                    try:
+                        rag_context, intent, rag_metadata = build_rag_context(
+                            user_query, db, api_key
+                        )
+                    except Exception as exc:
+                        logger.warning("RAG retrieval failed: %s", exc)
 
                 try:
-                    client = Mistral(api_key=api_key)
-                    stream = client.chat.stream(
-                        model="mistral-large-latest",
-                        messages=messages,
-                    )
-                    for event in stream:
-                        token = event.data.choices[0].delta.content
-                        if token:
+                    if rag_context:
+                        # RAG path
+                        for token in stream_response(
+                            user_query, rag_context,
+                            st.session_state.chat_history, api_key,
+                        ):
                             full_response += token
                             placeholder.markdown(full_response + "\u258c")
+                    else:
+                        # V1 fallback: context-stuffing from session state
+                        context_parts = []
+                        for fname, inv in session_invoices.items():
+                            context_parts.append(
+                                f"## {fname}\n```json\n{json.dumps(inv['data'], indent=2)}\n```"
+                            )
+                        invoices_context = "\n\n".join(context_parts)
+                        system_prompt = (
+                            "You are an invoice analysis assistant. Here are the processed invoices:\n\n"
+                            f"{invoices_context}\n\n"
+                            "Answer the user's question based on this data. Be precise with numbers. "
+                            "If you calculate totals, show your work. Use markdown formatting."
+                        )
+
+                        messages = [{"role": "system", "content": system_prompt}]
+                        messages.extend(
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.chat_history
+                        )
+
+                        client = Mistral(api_key=api_key)
+                        stream = client.chat.stream(
+                            model="mistral-large-latest",
+                            messages=messages,
+                        )
+                        for event in stream:
+                            token = event.data.choices[0].delta.content
+                            if token:
+                                full_response += token
+                                placeholder.markdown(full_response + "\u258c")
+
                     placeholder.markdown(full_response)
                 except Exception as e:
                     full_response = f"Error generating response: {e}"
                     placeholder.error(full_response)
 
+                # Show retrieval details
+                if rag_metadata:
+                    intent_label = rag_metadata.get("intent", "")
+                    with st.expander(f"Retrieval details ({intent_label})"):
+                        if "sql" in rag_metadata:
+                            st.code(rag_metadata["sql"], language="sql")
+                        if "num_results" in rag_metadata:
+                            st.caption(f"Retrieved {rag_metadata['num_results']} invoices via semantic search")
+
                 st.session_state.chat_history.append(
-                    {"role": "assistant", "content": full_response}
+                    {"role": "assistant", "content": full_response, "metadata": rag_metadata}
                 )

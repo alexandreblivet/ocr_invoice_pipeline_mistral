@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "streamlit>=1.55.0",
     "streamlit-pdf-viewer>=0.0.28",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]
