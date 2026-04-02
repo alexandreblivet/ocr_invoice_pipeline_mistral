@@ -121,7 +121,7 @@ AUTO_SAVE_INVOICES=true     # Auto-save extracted invoices
 app.py                    Streamlit UI (three tabs)
 pipeline/
   schemas.py              Pydantic models: LineItem, InvoiceData, ProcessedInvoice
-  ocr.py                  Mistral OCR wrapper with retry logic
+  ocr.py                  Mistral OCR wrapper
   extract.py              Two-tier extraction pipeline
   database.py             SQLite + sqlite-vec persistence layer
   embeddings.py           Mistral embeddings wrapper
@@ -135,37 +135,21 @@ tests/                    Unit tests (mocked) and smoke tests (real API)
 ## Mermaid Diagram
 
 ```mermaid
-flowchart TB
-    subgraph Upload["Upload & Extraction"]
-        PDF[PDF Upload] --> FileAPI[Mistral Files API]
-        FileAPI --> SignedURL[Signed URL]
-        SignedURL --> T1[Tier 1: OCR + Annotation]
-        T1 -->|success| PI[ProcessedInvoice]
-        T1 -->|failure| T2[Tier 2: Plain OCR + chat.parse]
-        T2 --> PI
-    end
+flowchart LR
+    PDF[PDF] --> OCR[Mistral OCR]
+    OCR -->|Tier 1| Annotation[Annotation extraction]
+    OCR -->|Tier 2 fallback| Chat[chat.parse]
+    Annotation --> Data[Structured data]
+    Chat --> Data
+    Data --> DB[(SQLite)]
+    Data --> Embed[mistral-embed] --> Vec[(sqlite-vec)]
 
-    subgraph Persist["Persistence"]
-        PI --> Chunk[Build text chunk]
-        Chunk --> Embed[mistral-embed]
-        Embed --> Vec[invoice_embeddings]
-        PI --> SQL[(invoices + line_items)]
-    end
-
-    subgraph RAG["Chat / RAG Pipeline"]
-        Query[User query] --> Classify[Intent classifier]
-        Classify -->|analytical| TTS[Text-to-SQL]
-        Classify -->|semantic| VS[Vector search]
-        Classify -->|hybrid| Both[SQL + Vector]
-        TTS --> Context[Retrieved context]
-        VS --> Context
-        Both --> Context
-        Context --> Gen[mistral-large streaming]
-        Gen --> Response[Chat response]
-    end
-
-    SQL --> TTS
-    Vec --> VS
+    Query[User query] --> Classify[Intent router]
+    Classify --> SQL[Text-to-SQL] --> Context
+    Classify --> Search[Vector search] --> Context
+    DB --> SQL
+    Vec --> Search
+    Context --> LLM[mistral-large] --> Response
 ```
 
 ### Extraction pipeline
