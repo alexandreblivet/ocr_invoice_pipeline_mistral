@@ -7,10 +7,10 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org/)
 
 A Streamlit application that uses Mistral's Document AI stack to:
-- ✅ Extract structured data (vendor, amounts, line items) from invoice PDFs
-- ✅ Validate extracted fields against the original document
-- ✅ Store data in SQLite with vector embeddings for semantic search
-- ✅ Query invoices through a RAG-powered chat interface
+-  Extract structured data (vendor, amounts, line items) from invoice PDFs
+-  Validate extracted fields against the original document
+-  Store data in SQLite with vector embeddings for semantic search
+-  Query invoices through a RAG-powered chat interface
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ uv run streamlit run app.py
 
 The app will open in your browser at `http://localhost:8501`
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 ocr_invoice_pipeline_mistral/
@@ -50,7 +50,7 @@ ocr_invoice_pipeline_mistral/
 └── tests/                    # Unit & smoke tests
 ```
 
-## 🚀 Usage
+##  Usage
 
 ### Upload and Extract Invoices
 
@@ -72,7 +72,7 @@ ocr_invoice_pipeline_mistral/
 
 **Database Tab**: Browse, search, and export all saved invoices
 
-## 🔧 Features
+##  Features
 
 ### Two-Tier Extraction
 - **Tier 1 (Fast)**: Single API call using `mistral-ocr-latest` with document annotation
@@ -89,7 +89,7 @@ ocr_invoice_pipeline_mistral/
 - Transactional consistency between structured data and embeddings
 - Full-text search and semantic search capabilities
 
-## 🛠️ Development
+##  Development
 
 ### Running Tests
 
@@ -112,40 +112,6 @@ DEBUG=true                  # Enable debug logging
 AUTO_SAVE_INVOICES=true     # Auto-save extracted invoices
 ```
 
-## 📚 Documentation
-
-- [Architecture Overview](docs/architecture.md) - Detailed system design and data flow
-- [Architecture Decisions](docs/decisions.md) - Rationale behind key design choices
-- [Mistral Patterns](docs/mistral-patterns.md) - Best practices for Mistral AI integration
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m 'Add some feature'`
-4. Push to the branch: `git push origin feature/your-feature`
-5. Open a pull request
-
-## 🐛 Troubleshooting
-
-**Issue: API key not working**
-- Ensure your Mistral API key is valid and has sufficient credits
-- Check that `.env` file is in the root directory
-- Restart the Streamlit app after changing the key
-
-**Issue: Database not found**
-- The database is auto-created on first run in `data/invoices.db`
-- Ensure the `data/` directory is writable
-- If using Streamlit Cloud, note that the filesystem is ephemeral
-
-**Issue: Vector search not working**
-- Ensure sqlite-vec extension is properly loaded
-- Check that embeddings were generated during invoice processing
-- Try reinstalling dependencies: `uv sync --clean`
-
-## 📜 License
-
-This project is licensed under the MIT License.
 
 ## Architecture
 
