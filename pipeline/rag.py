@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from pipeline.database import InvoiceDatabase
 from pipeline.embeddings import embed_text
-from pipeline.ocr import _retry
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,11 @@ def classify_query(query: str, api_key: str) -> QueryIntent:
     """Classify user query as analytical, semantic, or hybrid."""
     try:
         client = Mistral(api_key=api_key)
-        response = _retry(
-            client.chat.complete,
+        response = client.chat.complete(
             model=CLASSIFY_MODEL,
             messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(query=query)}],
             temperature=0,
             max_tokens=10,
-            context="classify_query",
         )
         intent_str = response.choices[0].message.content.strip().lower()
         for intent in QueryIntent:
@@ -66,15 +63,13 @@ def classify_query(query: str, api_key: str) -> QueryIntent:
 def build_sql_query(query: str, schema: str, api_key: str) -> str:
     """Generate a SELECT query from natural language."""
     client = Mistral(api_key=api_key)
-    response = _retry(
-        client.chat.complete,
+    response = client.chat.complete(
         model=SQL_MODEL,
         messages=[
             {"role": "system", "content": SQL_SYSTEM_PROMPT.format(schema=schema)},
             {"role": "user", "content": query},
         ],
         temperature=0,
-        context="build_sql_query",
     )
     sql = response.choices[0].message.content.strip()
     # Strip markdown code fences if present

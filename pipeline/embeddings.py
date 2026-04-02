@@ -2,7 +2,6 @@ import logging
 
 from mistralai.client import Mistral
 
-from pipeline.ocr import _retry
 from pipeline.schemas import ProcessedInvoice
 
 logger = logging.getLogger(__name__)
@@ -14,11 +13,9 @@ EMBED_DIMENSION = 1024
 def embed_text(text: str, api_key: str) -> list[float]:
     """Embed a single text string. Returns 1024-dim float vector."""
     client = Mistral(api_key=api_key)
-    response = _retry(
-        client.embeddings.create,
+    response = client.embeddings.create(
         model=EMBED_MODEL,
         inputs=[text],
-        context="embed_text",
     )
     return response.data[0].embedding
 
@@ -26,11 +23,9 @@ def embed_text(text: str, api_key: str) -> list[float]:
 def embed_texts(texts: list[str], api_key: str) -> list[list[float]]:
     """Embed multiple texts in a single API call."""
     client = Mistral(api_key=api_key)
-    response = _retry(
-        client.embeddings.create,
+    response = client.embeddings.create(
         model=EMBED_MODEL,
         inputs=texts,
-        context="embed_texts",
     )
     sorted_data = sorted(response.data, key=lambda d: d.index)
     return [d.embedding for d in sorted_data]

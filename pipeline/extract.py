@@ -5,15 +5,62 @@ from mistralai.client import Mistral
 from mistralai.client.models import DocumentURLChunk
 from mistralai.client.models.responseformat import ResponseFormat, JSONSchema
 
-from pipeline.ocr import _upload_and_get_url, _retry, run_ocr, get_markdown
+from pipeline.ocr import _upload_and_get_url, run_ocr, get_markdown
 from pipeline.schemas import InvoiceData, ProcessedInvoice
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_PROMPT = """You are an invoice data extraction assistant.
-Extract all invoice fields from the following OCR text.
-Return ONLY the structured data matching the schema. Be precise with numbers.
-If a field is not found, use null for optional fields."""
+EXTRACTION_PROMPT = """Extract structured invoice data from the OCR text below.
+
+LINE ITEMS — extract each row from any itemised table:
+- "description": product or service name
+- "quantity": number of units (default 1 if absent)
+- "unit_price": price per unit
+- "total": line total (quantity × unit_price)
+If there is no itemised table, create one line item with the total amount.
+
+TOTALS: subtotal = sum of line totals, tax_amount = tax if shown (else null), total_amount = final amount due.
+DATES: preserve original format. CURRENCY: ISO 3-letter code (USD, EUR, etc.).
+Use null for optional fields not clearly present."""
+
+ANNOTATION_PROMPT = """Extract structured invoice data into the JSON schema provided.
+
+LINE ITEMS — read each row from the invoice table:
+- "description": the product or service name (plain text, no nested objects)
+- "quantity": number of units (default 1 if not listed)
+- "unit_price": price per single unit
+- "total": line total (quantity × unit_price)
+If the invoice has no itemised table, create one line item using the total amount.
+
+TOTALS: subtotal is the sum of line item totals. tax_amount is the tax if shown, else null. total_amount is the final amount due.
+
+DATES: preserve the original format from the document.
+CURRENCY: use ISO 3-letter code (USD, EUR, GBP, etc.).
+Use null for any optional field not clearly present in the document."""
+
+
+def _inline_schema() -> dict:
+    """Return InvoiceData JSON schema with $ref/$defs resolved inline.
+
+    Mistral's document_annotation_format does not follow JSON $ref pointers,
+    so we dereference them before sending the schema.
+    """
+    schema = InvoiceData.model_json_schema()
+    defs = schema.pop("$defs", {})
+    if not defs:
+        return schema
+
+    def _resolve(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_name = node["$ref"].rsplit("/", 1)[-1]
+                return _resolve(defs[ref_name])
+            return {k: _resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    return _resolve(schema)
 
 
 def extract_with_annotation(pdf_bytes: bytes, api_key: str, filename: str = "document.pdf") -> tuple[InvoiceData, str]:
@@ -21,8 +68,7 @@ def extract_with_annotation(pdf_bytes: bytes, api_key: str, filename: str = "doc
     client = Mistral(api_key=api_key)
     url = _upload_and_get_url(client, pdf_bytes, filename)
     logger.info("Tier 1: annotation extraction for %s", filename)
-    response = _retry(
-        client.ocr.process,
+    response = client.ocr.process(
         model="mistral-ocr-latest",
         document=DocumentURLChunk(document_url=url),
         table_format="html",
@@ -31,11 +77,10 @@ def extract_with_annotation(pdf_bytes: bytes, api_key: str, filename: str = "doc
             type="json_schema",
             json_schema=JSONSchema(
                 name="InvoiceData",
-                schema_definition=InvoiceData.model_json_schema(),
+                schema_definition=_inline_schema(),
             ),
         ),
-        document_annotation_prompt="Extract all invoice fields: vendor info, invoice number, dates, line items, totals, and payment terms.",
-        context=f"annotation({filename})",
+        document_annotation_prompt=ANNOTATION_PROMPT,
     )
     markdown = get_markdown(response)
 
@@ -44,13 +89,19 @@ def extract_with_annotation(pdf_bytes: bytes, api_key: str, filename: str = "doc
         raise ValueError("No document annotation returned")
 
     if isinstance(annotation, str):
-        data = InvoiceData.model_validate_json(annotation)
+        raw = json.loads(annotation)
     elif isinstance(annotation, dict):
-        data = InvoiceData.model_validate(annotation)
+        raw = annotation
     elif isinstance(annotation, InvoiceData):
-        data = annotation
+        return annotation, markdown
     else:
-        data = InvoiceData.model_validate(json.loads(str(annotation)))
+        raw = json.loads(str(annotation))
+
+    # Mistral sometimes wraps extracted data inside the JSON Schema structure
+    if "properties" in raw and "vendor_name" not in raw:
+        raw = raw["properties"]
+
+    data = InvoiceData.model_validate(raw)
 
     logger.info("Tier 1 succeeded for %s: %s / %s", filename, data.vendor_name, data.invoice_number)
     return data, markdown
@@ -60,8 +111,7 @@ def extract_with_chat(markdown: str, api_key: str) -> InvoiceData:
     """Tier 2 fallback: OCR markdown -> chat.parse() with Pydantic response_format."""
     client = Mistral(api_key=api_key)
     logger.info("Tier 2: chat.parse extraction")
-    response = _retry(
-        client.chat.parse,
+    response = client.chat.parse(
         model="mistral-small-latest",
         messages=[
             {"role": "system", "content": EXTRACTION_PROMPT},
@@ -69,7 +119,6 @@ def extract_with_chat(markdown: str, api_key: str) -> InvoiceData:
         ],
         response_format=InvoiceData,
         temperature=0,
-        context="chat.parse",
     )
     return response.choices[0].message.parsed
 
