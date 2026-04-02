@@ -1,20 +1,151 @@
-# Invoice Processor
+# 📄 Invoice Processor
 
-A Streamlit application for extracting structured data from invoice PDFs using Mistral's Document AI stack. Upload invoices, validate extracted fields against the original document, persist them to a local SQLite database with vector embeddings, and query the data through a RAG-powered chat interface.
+**Extract structured data from invoice PDFs using Mistral AI**
 
-## Setup
+[![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![Mistral](https://img.shields.io/badge/Mistral_AI-FF7000?logo=mistralai&logoColor=white)](https://mistral.ai/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org/)
+
+A Streamlit application that uses Mistral's Document AI stack to:
+- ✅ Extract structured data (vendor, amounts, line items) from invoice PDFs
+- ✅ Validate extracted fields against the original document
+- ✅ Store data in SQLite with vector embeddings for semantic search
+- ✅ Query invoices through a RAG-powered chat interface
+
+## Quick Start
 
 ```bash
+# 1. Clone and navigate
 cd ocr_invoice_pipeline_mistral
+
+# 2. Install dependencies
 uv sync
 
-# Configure API key
+# 3. Configure Mistral API key
 cp .env.example .env
-# Edit .env and add your Mistral API key
+# Edit .env and add your MISTRAL_API_KEY
 
-# Run the app
+# 4. Run the app
 uv run streamlit run app.py
 ```
+
+The app will open in your browser at `http://localhost:8501`
+
+## 📁 Project Structure
+
+```
+ocr_invoice_pipeline_mistral/
+├── app.py                    # Streamlit UI (3 tabs)
+├── pipeline/
+│   ├── schemas.py            # Pydantic data models
+│   ├── ocr.py                # Mistral OCR wrapper
+│   ├── extract.py            # Two-tier extraction pipeline
+│   ├── database.py           # SQLite persistence
+│   ├── embeddings.py         # Vector embeddings
+│   └── rag.py                # RAG pipeline
+├── components/
+│   └── pdf_viewer.py         # PDF viewer component
+├── data/                     # SQLite database (auto-created)
+├── samples/                  # Sample invoice PDFs
+└── tests/                    # Unit & smoke tests
+```
+
+## 🚀 Usage
+
+### Upload and Extract Invoices
+
+1. **Upload Tab**: Drag and drop invoice PDFs or use the file uploader
+2. **Validation Tab**: Review extracted fields side-by-side with the PDF preview
+3. **Edit & Save**: Correct any extraction errors and save to database
+
+### Query Your Data
+
+**Chat Interface**: Ask natural language questions about your invoices
+
+```
+# Examples:
+"What was our total spending last month?"
+"Show me all invoices from Acme Corp"
+"Find invoices related to office supplies"
+"What's the average invoice amount?"
+```
+
+**Database Tab**: Browse, search, and export all saved invoices
+
+## 🔧 Features
+
+### Two-Tier Extraction
+- **Tier 1 (Fast)**: Single API call using `mistral-ocr-latest` with document annotation
+- **Tier 2 (Robust)**: Fallback using plain OCR + `mistral-small-latest` chat parsing
+- Automatic fallback ensures high reliability across different invoice formats
+
+### Smart RAG Pipeline
+- **Intent Classification**: Automatically detects query type (analytical, semantic, hybrid)
+- **Dual Retrieval**: Uses SQL for structured queries and vector search for semantic queries
+- **Streaming Responses**: Real-time chat responses with `mistral-large-latest`
+
+### Local Database
+- Single SQLite file with vector embeddings via sqlite-vec
+- Transactional consistency between structured data and embeddings
+- Full-text search and semantic search capabilities
+
+## 🛠️ Development
+
+### Running Tests
+
+```bash
+# Unit tests (no API key needed, all Mistral calls are mocked)
+uv run pytest -m "not smoke" -v
+
+# Smoke tests (requires MISTRAL_API_KEY, hits real API)
+uv run pytest -m smoke -v --timeout=120
+```
+
+### Environment Variables
+
+```env
+# Required
+MISTRAL_API_KEY=your_api_key_here
+
+# Optional
+DEBUG=true                  # Enable debug logging
+AUTO_SAVE_INVOICES=true     # Auto-save extracted invoices
+```
+
+## 📚 Documentation
+
+- [Architecture Overview](docs/architecture.md) - Detailed system design and data flow
+- [Architecture Decisions](docs/decisions.md) - Rationale behind key design choices
+- [Mistral Patterns](docs/mistral-patterns.md) - Best practices for Mistral AI integration
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Commit your changes: `git commit -m 'Add some feature'`
+4. Push to the branch: `git push origin feature/your-feature`
+5. Open a pull request
+
+## 🐛 Troubleshooting
+
+**Issue: API key not working**
+- Ensure your Mistral API key is valid and has sufficient credits
+- Check that `.env` file is in the root directory
+- Restart the Streamlit app after changing the key
+
+**Issue: Database not found**
+- The database is auto-created on first run in `data/invoices.db`
+- Ensure the `data/` directory is writable
+- If using Streamlit Cloud, note that the filesystem is ephemeral
+
+**Issue: Vector search not working**
+- Ensure sqlite-vec extension is properly loaded
+- Check that embeddings were generated during invoice processing
+- Try reinstalling dependencies: `uv sync --clean`
+
+## 📜 License
+
+This project is licensed under the MIT License.
 
 ## Architecture
 
