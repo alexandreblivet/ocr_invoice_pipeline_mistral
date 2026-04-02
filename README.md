@@ -12,6 +12,8 @@ A Streamlit application that uses Mistral's Document AI stack to:
 -  Store data in SQLite with vector embeddings for semantic search
 -  Query invoices through a RAG-powered chat interface
 
+Try the streamlit cloud deployed version here: [invoice_ocr](https://ocrinvoicepipelinemistral.streamlit.app/)
+
 ## Quick Start
 
 ```bash
